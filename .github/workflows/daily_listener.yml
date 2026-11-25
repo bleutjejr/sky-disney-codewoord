@@ -1,0 +1,101 @@
+name: Disney-codewoord Sky Radio
+
+on:
+  schedule:
+    # 06:00 Europe/Amsterdam. De hele actieperiode (27 nov t/m 24 dec 2026)
+    # valt in de wintertijd: CET is UTC+1, dus 05:00 UTC.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: Alleen een ntfy-test versturen, niet luisteren
+        required: false
+        type: boolean
+        default: false
+
+# Eén luisteraar tegelijk. Een estafette-run wacht tot de vorige job klaar is.
+concurrency:
+  group: sky-disney-codewoord
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  luister:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Whisper-model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: faster-whisper-small-int8-v1
+          restore-keys: |
+            faster-whisper-small-int8-
+
+      - name: Git-identiteit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Whisper-model voorverwarmen
+        if: github.event_name != 'workflow_dispatch' || inputs.test == false
+        env:
+          HF_HOME: /home/runner/.cache/huggingface
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python - <<'PY'
+          import tempfile
+          import wave
+          from pathlib import Path
+          from faster_whisper import WhisperModel
+
+          model = WhisperModel("small", device="cpu", compute_type="int8")
+          path = Path(tempfile.gettempdir()) / "whisper-warmup.wav"
+          with wave.open(str(path), "w") as handle:
+              handle.setnchannels(1)
+              handle.setsampwidth(2)
+              handle.setframerate(16000)
+              handle.writeframes(b"\x00\x00" * 16000)
+          segments, _info = model.transcribe(str(path), language="nl", beam_size=1, vad_filter=True)
+          list(segments)
+          path.unlink(missing_ok=True)
+          print("Whisper-model gereed")
+          PY
+
+      - name: Luister naar Sky Radio
+        id: luister
+        shell: bash
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          HF_HOME: /home/runner/.cache/huggingface
+          PYTHONUNBUFFERED: "1"
+        run: |
+          if [ "${{ inputs.test }}" = "true" ]; then
+            python main.py --test
+          else
+            python main.py
+          fi
+
+      - name: Start volgende estafette-runner
+        if: steps.luister.outputs.relay == 'true' && inputs.test != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run daily_listener.yml --ref "${{ github.ref_name }}"
