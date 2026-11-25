@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 jobs:
@@ -50,10 +50,19 @@ jobs:
           restore-keys: |
             faster-whisper-small-int8-
 
-      - name: Git-identiteit
+      - name: Herstel codewoorden uit de Actions-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: gevonden_codewoorden.json
+          key: codewoorden-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            codewoorden-
+
+      - name: Zorg dat het toestandsbestand bestaat
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ ! -f gevonden_codewoorden.json ]; then
+            echo '{}' > gevonden_codewoorden.json
+          fi
 
       - name: Whisper-model voorverwarmen
         if: github.event_name != 'workflow_dispatch' || inputs.test == false
@@ -93,6 +102,13 @@ jobs:
           else
             python main.py
           fi
+
+      - name: Bewaar codewoorden in de Actions-cache
+        if: always() && hashFiles('gevonden_codewoorden.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: gevonden_codewoorden.json
+          key: codewoorden-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Start volgende estafette-runner
         if: steps.luister.outputs.relay == 'true' && inputs.test != true

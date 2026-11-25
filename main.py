@@ -201,119 +201,6 @@ def find_candidate(candidates: list[dict], word: str) -> tuple[dict | None, floa
     return best, best_ratio
 
 
-def git_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    return env
-
-
-def publish_state(message: str) -> None:
-    """Commit en push alleen gevonden_codewoorden.json. Faalt zichtbaar door."""
-    inside = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    )
-    if inside.returncode != 0 or inside.stdout.strip() != "true":
-        log.warning("Geen git-werkboom; JSON blijft alleen op schijf staan.")
-        return
-
-    identity = subprocess.run(
-        ["git", "config", "--get", "user.email"],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    )
-    if identity.returncode != 0 or not identity.stdout.strip():
-        log.warning(
-            "git user.email ontbreekt, commit overgeslagen. "
-            "In GitHub Actions zet de workflow de identiteit."
-        )
-        return
-
-    add = subprocess.run(
-        ["git", "add", "--", config.STATE_PATH.name],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    )
-    if add.returncode != 0:
-        raise RuntimeError(add.stderr.strip() or "git add mislukt")
-
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--quiet", "--", config.STATE_PATH.name],
-        cwd=config.ROOT,
-        env=git_env(),
-    )
-    if staged.returncode == 0:
-        log.info("Geen wijziging in gevonden_codewoorden.json om te committen.")
-        return
-    if staged.returncode != 1:
-        raise RuntimeError("git diff kon de staging-status niet bepalen")
-
-    commit = subprocess.run(
-        ["git", "commit", "-m", message],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    )
-    if commit.returncode != 0:
-        raise RuntimeError(commit.stderr.strip() or commit.stdout.strip() or "git commit mislukt")
-    log.info("Commit gemaakt: %s", message)
-
-    remote = subprocess.run(
-        ["git", "remote"],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    )
-    if remote.returncode != 0 or "origin" not in remote.stdout.split():
-        log.warning("Geen origin-remote; push overgeslagen.")
-        return
-
-    branch = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=config.ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-        env=git_env(),
-    ).stdout.strip()
-
-    last_error = ""
-    for attempt in range(1, 4):
-        push = subprocess.run(
-            ["git", "push", "origin", "HEAD"],
-            cwd=config.ROOT,
-            capture_output=True,
-            text=True,
-            env=git_env(),
-        )
-        if push.returncode == 0:
-            log.info("gevonden_codewoorden.json gepusht.")
-            return
-        last_error = (push.stderr or push.stdout).strip()
-        log.warning("Push poging %s mislukt: %s", attempt, last_error)
-        pull = subprocess.run(
-            ["git", "pull", "--rebase", "origin", branch],
-            cwd=config.ROOT,
-            capture_output=True,
-            text=True,
-            env=git_env(),
-        )
-        if pull.returncode != 0:
-            last_error = (pull.stderr or pull.stdout).strip()
-            log.warning("Rebase mislukt: %s", last_error)
-            break
-    raise RuntimeError(last_error or "git push mislukt")
-
-
 def utf8_header(value: str) -> str:
     """requests verstuurt headers als latin-1. Deze omweg levert op de lijn UTF-8."""
     return value.encode("utf-8").decode("latin-1")
@@ -625,19 +512,13 @@ def register_hearing(
             phrase,
         )
     if not confirmed:
-        try:
-            publish_state(f"Bewaar kandidaat-codewoorden voor {day.isoformat()}")
-        except Exception:
-            log.exception("Kandidaat opslaan in git mislukt; de telling blijft lokaal bewaard.")
         return False
 
-    publish_state(f"Registreer geverifieerd Disney-codewoord voor {day.isoformat()}")
     send_verified(display, phrases)
     with STATE_LOCK:
         bucket = ensure_day(state, day)
         bucket["notified"] = True
         save_state(state)
-    publish_state(f"Markeer Disney-codewoord voor {day.isoformat()} als gemeld")
     log.info("Codewoord geverifieerd en gemeld: %s", display)
     return True
 
@@ -788,7 +669,6 @@ def retry_pending_notification(state: dict, day: date) -> None:
     send_verified(word, phrases)
     bucket["notified"] = True
     save_state(state)
-    publish_state(f"Markeer Disney-codewoord voor {day.isoformat()} als gemeld")
 
 
 def build_parser() -> argparse.ArgumentParser:

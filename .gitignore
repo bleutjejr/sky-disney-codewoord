@@ -6,4 +6,5 @@ venv/
 *.wav
 *.mp3
 *.tmp
+gevonden_codewoorden.json
 gevonden_codewoorden.tmp

@@ -1,6 +1,6 @@
 # Sky Radio Disney-codewoord
 
-GitHub Actions luistert elke ochtend naar de publieke livestream van Sky Radio en vangt het Disney-codewoord van de dag. Het woord telt pas als het **twee keer onafhankelijk** is gehoord. Daarna komt er één ntfy-melding, wordt `gevonden_codewoorden.json` gecommit en gepusht, en stopt de estafette.
+GitHub Actions luistert elke ochtend naar de publieke livestream van Sky Radio en vangt het Disney-codewoord van de dag. Het woord telt pas als het **twee keer onafhankelijk** is gehoord. Daarna komt er één ntfy-melding, wordt `gevonden_codewoorden.json` in de Actions-cache gezet, en stopt de estafette.
 
 Actieperiode: **27 november 2026 00:00** t/m **24 december 2026 23:59** (Europe/Amsterdam).
 
@@ -19,22 +19,24 @@ Buiten dat venster stopt `main.py` direct, tenzij je `--test` gebruikt.
    - Tags: `sparkles,radio,white_check_mark`
    - Click: de Sky Radio-actiepagina
    - Body: het woord plus de twee uitgeschreven zinnen
-7. Het script schrijft het woord naar `gevonden_codewoorden.json`, commit en pusht dat bestand, en zet **geen** volgende runner klaar.
+7. Het script schrijft het woord naar `gevonden_codewoorden.json`. De workflow bewaart dat bestand in de Actions-cache en zet **geen** volgende runner klaar.
 8. Staat het woord voor vandaag al in dat bestand, dan stopt een nieuwe run meteen.
-9. Is het budget van **325 minuten** op en het woord nog niet bevestigd, dan pusht de run de kandidaten en start via `workflow_dispatch` de volgende runner. Om 23:59 lokale tijd stopt de dag zonder nieuwe runner; de cron van de volgende ochtend begint opnieuw.
+9. Is het budget van **325 minuten** op en het woord nog niet bevestigd, dan bewaart de run de kandidaten in de cache en start via `workflow_dispatch` de volgende runner. Om 23:59 lokale tijd stopt de dag zonder nieuwe runner; de cron van de volgende ochtend begint opnieuw.
 
 Tussen twee runners zit een korte wisselpauze (checkout, pip, cache). Binnen één runner is de opname continu.
 
 ## Repository en minuten
 
-De repository is **publiek**. GitHub Actions op de standaard runners is daar gratis, en een luisterdag kan meerdere runners van ruim vijf uur gebruiken. Het codewoord van de dag komt in `gevonden_codewoorden.json` en is daarmee leesbaar voor wie de repo opent. Het woord wordt toch op de radio omgeroepen.
+De repository is **publiek**. GitHub Actions op de standaard runners is daar gratis, en een luisterdag kan meerdere runners van ruim vijf uur gebruiken. Het codewoord staat niet in git. Elke run herstelt `gevonden_codewoorden.json` uit de Actions-cache en schrijft daarna een nieuwe cache weg, vóór een eventuele estafette. Die cache is alleen beschikbaar voor workflows in deze repository, niet in de publieke code. GitHub bewaart een cache tot zeven dagen na het laatste gebruik; de dagelijkse cron houdt hem tijdens de actie in leven.
 
-`GITHUB_TOKEN` mag een `workflow_dispatch` starten (dat is de uitzondering op de regel dat deze token geen nieuwe workflows triggert). Deze workflow zet daarvoor `actions: write` en `contents: write`.
+`GITHUB_TOKEN` mag een `workflow_dispatch` starten. Deze workflow heeft daarvoor `actions: write`. Inhoud van de repo schrijven is niet nodig (`contents: read`).
+
+Onder **Settings → Actions → General** staat *Require approval for all external contributors*. Een fork kan daardoor geen workflow starten die het `NTFY_TOPIC`-secret zou kunnen uitlezen, tot jij die run zelf goedkeurt.
 
 ## Secret `NTFY_TOPIC`
 
 1. Installeer de [ntfy-app](https://ntfy.sh) (of gebruik de website).
-2. Kies een lang, lastig te raden topic, bijvoorbeeld `sky-disney-leon-7k3m`. Iedereen die de naam kent kan meelezen, dus behandel het als een wachtwoord.
+2. Kies een willekeurige topicnaam van minstens 16 tekens, bijvoorbeeld `sky-k9m2x8p4q7w1z5r9`. Wie de naam kent kan meelezen. Zet de naam nergens in de repository.
 3. Abonneer je telefoon op dat topic.
 4. Zet in de GitHub-repo onder **Settings → Secrets and variables → Actions** een secret:
    - Name: `NTFY_TOPIC`
@@ -64,11 +66,11 @@ python main.py --test
 
 `--test` slaat de datumcheck en de radio over en stuurt meteen één testmelding met het woord `TEST`. Dat is geen echt codewoord.
 
-Een echte luisterrun lokaal is dezelfde opdracht zonder `--test`, binnen de actieperiode. Zonder `git user.email` en zonder `origin` wordt de JSON wel opgeslagen, maar niet gepusht.
+Een echte luisterrun lokaal is dezelfde opdracht zonder `--test`, binnen de actieperiode. Het JSON-bestand blijft dan alleen op je computer staan.
 
 ## JSON
 
-`gevonden_codewoorden.json` begint als `{}`. Per datum komen er kandidaten, tellingen, de twee zinnen, en na bevestiging `verified` plus `notified` bij. Kandidaten worden ook gepusht tijdens een estafette, zodat de volgende runner de telling doorzet.
+`gevonden_codewoorden.json` begint als `{}` en staat in `.gitignore`. Per datum komen er kandidaten, tellingen, de twee zinnen, en na bevestiging `verified` plus `notified` bij. In GitHub Actions geeft de cache dat bestand door aan de volgende estafette-runner.
 
 ## Handig om te weten
 
