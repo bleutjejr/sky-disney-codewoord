@@ -13,7 +13,7 @@ Buiten dat venster stopt `main.py` direct, tenzij je `--test` gebruikt.
 3. faster-whisper (`small`, `language=nl`, `compute_type=int8`) maakt er Nederlandse tekst van. Het model blijft in de Hugging Face-cache van de workflow staan.
 4. Zinnen met `codewoord`, `disney`, `disneyland`, `woord van vandaag` of `kerstcodewoord` worden uitgelezen. Het woord ná `codewoord is` / `codewoord:` (of `woord van vandaag is`) is de kandidaat.
 5. Kleine spraak-naar-tekstfouten worden samengevoegd met `difflib.SequenceMatcher` (ratio ≥ 0.85). Dezelfde aankondiging in twee overlappende segmenten telt één keer: een nieuwe treffer moet minstens **60 seconden** na de vorige segmentstart vallen. Dat is langer dan de 40 seconden tussen twee starts, en kort genoeg om een latere herhaling apart te tellen.
-6. Bij de tweede onafhankelijke treffer gaat er één POST naar `https://ntfy.sh/{NTFY_TOPIC}`:
+6. Bij de eerste treffer gaat er meteen een melding uit met de titel `🎄 Nog niet bevestigd: {WOORD}` en de gehoorde zin. Bij de tweede onafhankelijke treffer gaat er één POST naar `https://ntfy.sh/{NTFY_TOPIC}`:
    - Title: `🎄 Geverifieerd Disney Codewoord: {WOORD}`
    - Priority: `high`
    - Tags: `sparkles,radio,white_check_mark`

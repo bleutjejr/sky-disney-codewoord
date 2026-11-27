@@ -219,14 +219,14 @@ def normalize_topic(raw: str) -> str:
     return topic
 
 
-def send_ntfy(title: str, body: str) -> None:
+def send_ntfy(title: str, body: str, tags: str = "sparkles,radio,white_check_mark") -> None:
     import requests
 
     topic = normalize_topic(config.NTFY_TOPIC)
     headers = {
         "Title": utf8_header(title),
         "Priority": "high",
-        "Tags": "sparkles,radio,white_check_mark",
+        "Tags": tags,
         "Click": config.CLICK_URL,
         "Content-Type": "text/plain; charset=utf-8",
     }
@@ -264,6 +264,17 @@ def notification_body(word: str, phrases: list[str]) -> str:
 def send_verified(word: str, phrases: list[str]) -> None:
     title = f"🎄 Geverifieerd Disney Codewoord: {word}"
     send_ntfy(title, notification_body(word, phrases))
+
+
+def send_preliminary(word: str, phrase: str) -> None:
+    title = f"🎄 Nog niet bevestigd: {word}"
+    body = (
+        f"{word}\n\n"
+        "Nog niet bevestigd. Dit is de eerste keer dat dit woord vandaag is gehoord. "
+        "Een tweede, aparte uitzending is nog nodig.\n\n"
+        f"1. {phrase}\n"
+    )
+    send_ntfy(title, body, tags="sparkles,radio,hourglass")
 
 
 def send_test_notification() -> None:
@@ -501,6 +512,7 @@ def register_hearing(
             bucket["verified_at"] = heard_at.isoformat(timespec="seconds")
             bucket["notified"] = False
             bucket["phrases"] = phrases
+        first_time = count == 1 and not candidate.get("preliminary_notified")
         save_state(state)
         log.info(
             "Kandidaat '%s' gehoord als '%s' (ratio %.2f), telling %s/%s. Zin: %s",
@@ -511,6 +523,16 @@ def register_hearing(
             config.CONFIRMATIONS_REQUIRED,
             phrase,
         )
+    if first_time:
+        try:
+            send_preliminary(display, phrase)
+        except Exception:
+            log.exception("Eerste melding mislukt; luisteren gaat door.")
+        else:
+            with STATE_LOCK:
+                candidate["preliminary_notified"] = True
+                save_state(state)
+            log.info("Eerste, nog niet bevestigde melding verstuurd: %s", display)
     if not confirmed:
         return False
 
