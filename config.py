@@ -102,8 +102,6 @@ STOPWORDS = {
     "in",
     "te",
     "om",
-    "paris",
-    "parijs",
     "luister",
     "noteer",
     "noteren",
