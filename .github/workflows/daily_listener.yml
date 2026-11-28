@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      reset_today:
+        description: Wis de teller van vandaag (valse treffer) en luister opnieuw
+        required: false
+        type: boolean
+        default: false
 
 # Eén luisteraar tegelijk. Een estafette-run wacht tot de vorige job klaar is.
 concurrency:
@@ -79,6 +84,8 @@ jobs:
           import tempfile
           import wave
           from pathlib import Path
+
+          import config
           from faster_whisper import WhisperModel
 
           model = WhisperModel("small", device="cpu", compute_type="int8")
@@ -90,13 +97,16 @@ jobs:
               handle.writeframes(b"\x00\x00" * 16000)
           segments, _info = model.transcribe(
               str(path),
-              language="nl",
-              beam_size=3,
-              vad_filter=False,
-              initial_prompt=(
-                  "Sky Radio Disney kerst actie. Vandaag is dat codewoord: "
-                  "Parijs, fantasie, betoverend, sneeuw, kasteel, kerstboom, rendier."
-              ),
+              language=config.WHISPER_LANGUAGE,
+              beam_size=config.WHISPER_BEAM_SIZE,
+              best_of=1,
+              condition_on_previous_text=False,
+              temperature=0.0,
+              vad_filter=config.WHISPER_VAD_FILTER,
+              initial_prompt=config.WHISPER_INITIAL_PROMPT,
+              no_speech_threshold=config.WHISPER_NO_SPEECH_THRESHOLD,
+              log_prob_threshold=config.WHISPER_LOG_PROB_THRESHOLD,
+              compression_ratio_threshold=config.WHISPER_COMPRESSION_RATIO_THRESHOLD,
           )
           list(segments)
           path.unlink(missing_ok=True)
@@ -112,10 +122,14 @@ jobs:
           PYTHONUNBUFFERED: "1"
           DEBUG_TRANSCRIPTS: ${{ inputs.debug_transcripts == true && 'true' || 'false' }}
         run: |
+          extra=()
+          if [ "${{ inputs.reset_today }}" = "true" ]; then
+            extra+=(--reset-today)
+          fi
           if [ "${{ inputs.test }}" = "true" ]; then
-            python main.py --test
+            python main.py --test "${extra[@]}"
           else
-            python main.py
+            python main.py "${extra[@]}"
           fi
 
       - name: Bewaar codewoorden in de Actions-cache
