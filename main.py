@@ -4,8 +4,10 @@
 De opname loopt in segmenten van 45 seconden met 10 seconden overlap
 (elke 35 seconden een nieuwe start). Het codewoord is het losse woord direct
 na een van de twee promo's, en telt alleen als het één Nederlands zelfstandig
-naamwoord is. Een kandidaat is pas geverifieerd nadat hij twee keer
-onafhankelijk is gehoord (fuzzy-drempel 0.85, minimale tussenpauze 60 seconden).
+naamwoord is. Daarnaast moet het Whisper-segment zelf, of het segment direct
+ervoor of erna, promo-context bevatten. Een kandidaat is pas geverifieerd
+nadat hij twee keer onafhankelijk is gehoord (fuzzy-drempel 0.85, minimale
+tussenpauze 60 seconden).
 """
 
 from __future__ import annotations
@@ -250,6 +252,26 @@ def _pattern_matches(text: str) -> list[re.Match]:
     return found
 
 
+def has_promo_context(text: str) -> bool:
+    """True als de tekst een promo-woord bevat, los van de codewoord-zin."""
+    folded = text.casefold()
+    for term in config.PROMO_CONTEXT:
+        if " " in term:
+            if term.casefold() in folded:
+                return True
+            continue
+        if re.search(rf"(?<!\w){re.escape(term.casefold())}s?(?!\w)", folded):
+            return True
+    return False
+
+
+def promo_context_nearby(parts: list[str], index: int) -> bool:
+    """Context in dit Whisper-segment of in het direct voorafgaande of volgende."""
+    start = max(0, index - 1)
+    end = min(len(parts), index + 2)
+    return has_promo_context(collapse(" ".join(parts[start:end])))
+
+
 def review_transcript(nlp, text: str) -> list[tuple[str, str]]:
     """Log elke zin met 'codewoord' en geef de geaccepteerde (woord, zin)-paren."""
     spans = _sentence_spans(text)
@@ -386,6 +408,8 @@ def send_ntfy(
         "Click": config.CLICK_URL,
         "Content-Type": "text/plain; charset=utf-8",
     }
+    if config.NTFY_TOKEN:
+        headers["Authorization"] = f"Bearer {config.NTFY_TOKEN}"
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
@@ -420,6 +444,22 @@ def notification_body(word: str, phrases: list[str]) -> str:
 def send_verified(word: str, phrases: list[str]) -> None:
     title = f"🎄 Geverifieerd Disney Codewoord: {word}"
     send_ntfy(title, notification_body(word, phrases))
+
+
+def notify_saved_codeword(word: str, phrases: list[str]) -> bool:
+    """Meld een codewoord dat al in gevonden_codewoorden.json staat.
+
+    Een mislukte ntfy-melding crasht het script niet: het woord blijft
+    opgeslagen en een latere run probeert de melding opnieuw.
+    """
+    try:
+        send_verified(word, phrases)
+    except Exception:
+        log.exception(
+            "ntfy-melding mislukt nadat het codewoord al was opgeslagen; het script gaat door."
+        )
+        return False
+    return True
 
 
 def send_candidate_alert(word: str, phrase: str) -> None:
@@ -715,12 +755,17 @@ def register_hearing(
     if not confirmed:
         return False
 
-    send_verified(display, phrases)
-    with STATE_LOCK:
-        bucket = ensure_day(state, day)
-        bucket["notified"] = True
-        save_state(state)
-    log.info("Codewoord geverifieerd en gemeld: %s", display)
+    if notify_saved_codeword(display, phrases):
+        with STATE_LOCK:
+            bucket = ensure_day(state, day)
+            bucket["notified"] = True
+            save_state(state)
+        log.info("Codewoord geverifieerd en gemeld: %s", display)
+    else:
+        log.error(
+            "Codewoord %s staat opgeslagen, maar de melding lukte niet. Een latere run probeert het opnieuw.",
+            display,
+        )
     return True
 
 
@@ -756,25 +801,34 @@ def process_loop(
             except Exception:
                 log.exception("Transcriptie van %s mislukt.", path.name)
                 continue
-            text = collapse(" ".join(parts))
-            if not text or "codewoord" not in text.casefold():
+            if not any("codewoord" in part.casefold() for part in parts):
                 continue
             heard_at = item["started"]
             verified_now = False
-            for word, phrase in review_transcript(nlp, text):
-                if register_hearing(state, day, word, phrase, heard_at):
-                    verified_now = True
+            for index, part in enumerate(parts):
+                if "codewoord" not in part.casefold():
+                    continue
+                if not promo_context_nearby(parts, index):
+                    log.info("Segment zonder promo-context genegeerd: %s", collapse(part))
+                    continue
+                for word, phrase in review_transcript(nlp, part):
+                    if register_hearing(state, day, word, phrase, heard_at):
+                        verified_now = True
+                        break
+                if verified_now:
                     break
             if verified_now:
                 verified.set()
                 stop.set()
                 return
-        except Exception as exc:
+        except Exception:
             bucket = state.get(day.isoformat(), {})
-            if isinstance(bucket, dict) and bucket.get("verified") and not bucket.get("notified"):
-                fatal.append(exc)
+            if isinstance(bucket, dict) and bucket.get("verified"):
+                log.exception(
+                    "Fout nadat het codewoord al was opgeslagen; het script stopt zonder te crashen."
+                )
+                verified.set()
                 stop.set()
-                log.exception("Melden van het geverifieerde codewoord mislukt.")
                 return
             log.exception("Verwerking van %s mislukt.", path.name)
         finally:
@@ -906,7 +960,8 @@ def retry_pending_notification(state: dict, day: date) -> None:
         raise SystemExit(
             f"Codewoord {word} staat vast, maar er zijn geen twee zinnen opgeslagen om te melden."
         )
-    send_verified(word, phrases)
+    if not notify_saved_codeword(word, phrases):
+        return
     bucket["notified"] = True
     save_state(state)
 

@@ -122,6 +122,7 @@ jobs:
         shell: bash
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
           HF_HOME: /home/runner/.cache/huggingface
           PYTHONUNBUFFERED: "1"
           DEBUG_TRANSCRIPTS: ${{ inputs.debug_transcripts == true && 'true' || 'false' }}

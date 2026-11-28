@@ -26,6 +26,7 @@ STREAM_URL = os.environ.get(
     "https://playerservices.streamtheworld.com/api/livestream-redirect/SKYRADIO.mp3",
 )
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "").strip()
 NTFY_BASE = os.environ.get("NTFY_BASE", "https://ntfy.sh").rstrip("/")
 CLICK_URL = (
     "https://www.skyradio.nl/acties/win-een-betoverende-kerst-in-disneyland-paris"
@@ -70,6 +71,21 @@ KEYWORDS = (
     "disneyland",
     "woord van vandaag",
     "kerstcodewoord",
+)
+
+# Een kandidaat telt alleen als het Whisper-segment zelf, of het segment
+# direct ervoor of erna, minstens één van deze promo-woorden bevat.
+# Losse muziek-hallucinaties (Warschau, Kalk) hebben die context niet.
+PROMO_CONTEXT = (
+    "sky",
+    "app",
+    "skyradio",
+    "disney",
+    "disneyland",
+    "actie",
+    "vul",
+    "veel",
+    "iedere dag",
 )
 
 # Eenmalige breuk met de Actions-cache. Epoch 4 wist 2026-11-28 (Zang en
