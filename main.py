@@ -47,17 +47,6 @@ CUE_RE = re.compile(
     re.IGNORECASE,
 )
 TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{0,40}")
-# De initial_prompt noemt deze voorbeeldwoorden achter elkaar. Een echo daarvan
-# is geen echte aankondiging; één los codewoord blijft wel geldig.
-# Echo van de initial_prompt: de voorbeeldlijst, inclusief de cue die alleen die lijst inleidt.
-# Een echte promo noemt één woord en valt hier niet onder.
-PROMPT_ECHO_RE = re.compile(
-    r"(?:(?:vandaag|is|dat|het|de)[\s\"“”‘’'’:.,;!?\-–—]+){0,8}"
-    r"(?:kerst)?codewoord\b\s*:\s*"
-    r"parijs\b.{0,30}fantasie\b.{0,30}betoverend\b"
-    r"(?:[\s,.:;\"“”‘’'\-]+(?:sneeuw|kasteel|kerstboom|rendier)\b)*",
-    re.IGNORECASE | re.DOTALL,
-)
 # Hoeveel tokens ná de cue we nog naar het codewoord zoeken.
 CUE_LOOKAHEAD = 10
 
@@ -151,10 +140,6 @@ def phrase_around(text: str, cue_start: int, word_end: int) -> str:
     return collapse(text[left:word_end])[:400]
 
 
-def strip_prompt_echo(text: str) -> str:
-    return PROMPT_ECHO_RE.sub(" ", text)
-
-
 def _remember(found: dict[str, tuple[int, str, str]], word: str, phrase: str, score: int) -> None:
     key = normalize_word(word)
     previous = found.get(key)
@@ -205,10 +190,7 @@ def extract_from_parts(parts: list[str]) -> tuple[list[tuple[str, str]], list[st
     Whisper zet de stem van Mickey soms in het segment direct na de cue.
     Die twee segmenten worden samen gelezen, en ook de samengevoegde tekst.
     """
-    cleaned = [collapse(strip_prompt_echo(part)) for part in parts if collapse(part)]
-    cleaned = [part for part in cleaned if part]
-    if any(PROMPT_ECHO_RE.search(part) for part in parts):
-        log.info("Prompt-echo in een Whisper-segment genegeerd.")
+    cleaned = [collapse(part) for part in parts if collapse(part)]
     found: dict[str, tuple[int, str, str]] = {}
     unresolved: list[str] = []
 
@@ -234,7 +216,7 @@ def extract_from_parts(parts: list[str]) -> tuple[list[tuple[str, str]], list[st
         if bare and CUE_RE.search(part):
             unresolved.append(_sentence_with(part, "codewoord") if "codewoord" in part.casefold() else collapse(part)[:400])
 
-    joined = strip_prompt_echo(collapse(" ".join(parts)))
+    joined = collapse(" ".join(parts))
     joined_found, joined_bare = candidates_in_text(joined)
     for key, item in joined_found.items():
         previous = found.get(key)
@@ -582,8 +564,26 @@ def load_model():
     )
 
 
+def usable_segment_text(segment) -> str | None:
+    """Tekst van een Whisper-segment, of None als de kans te laag is.
+
+    De afgewezen tekst wordt niet teruggegeven en dus ook niet gelogd.
+    """
+    text = collapse(getattr(segment, "text", None) or "")
+    if not text:
+        return None
+    avg_logprob = getattr(segment, "avg_logprob", None)
+    if avg_logprob is not None and avg_logprob < config.WHISPER_MIN_AVG_LOGPROB:
+        return None
+    return text
+
+
 def transcribe(model, path: Path) -> list[str]:
-    """Transcribeer één segment. VAD uit, zodat de hoge stem van Mickey blijft staan."""
+    """Transcribeer één segment. VAD uit, zodat de hoge stem van Mickey blijft staan.
+
+    Segmenten met een te lage kans (muziek, effecten, onverstaanbare stem) vallen
+    weg. De tekst daarvan gaat niet naar de log, zodat een verzinsel niet blijft hangen.
+    """
     started = time.monotonic()
     segments, _info = model.transcribe(
         str(path),
@@ -594,17 +594,25 @@ def transcribe(model, path: Path) -> list[str]:
         temperature=0.0,
         vad_filter=config.WHISPER_VAD_FILTER,
         initial_prompt=config.WHISPER_INITIAL_PROMPT,
+        no_speech_threshold=config.WHISPER_NO_SPEECH_THRESHOLD,
+        log_prob_threshold=config.WHISPER_LOG_PROB_THRESHOLD,
+        compression_ratio_threshold=config.WHISPER_COMPRESSION_RATIO_THRESHOLD,
     )
     parts: list[str] = []
+    dropped = 0
     for segment in segments:
-        text = collapse(segment.text or "")
-        if text:
-            parts.append(text)
+        text = usable_segment_text(segment)
+        if text is None:
+            if collapse(getattr(segment, "text", None) or ""):
+                dropped += 1
+            continue
+        parts.append(text)
     log.info(
-        "Transcriptie %s in %.1fs (%s whisper-segmenten, beam=%s, vad=%s).",
+        "Transcriptie %s in %.1fs (%s whisper-segmenten, %s genegeerd wegens lage kans, beam=%s, vad=%s).",
         path.name,
         time.monotonic() - started,
         len(parts),
+        dropped,
         config.WHISPER_BEAM_SIZE,
         config.WHISPER_VAD_FILTER,
     )
@@ -887,6 +895,17 @@ def listen(state: dict, day: date) -> str:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def clear_today(state: dict, day: date) -> None:
+    """Wis kandidaten en een eventuele bevestiging van deze kalenderdag.
+
+    Het eerdere woord wordt niet gelogd. De workflow schrijft dit bestand daarna
+    terug naar de Actions-cache, zodat de volgende run de lege teller erft.
+    """
+    state[day.isoformat()] = blank_day()
+    save_state(state)
+    log.info("Teller van %s gewist.", day.isoformat())
+
+
 def retry_pending_notification(state: dict, day: date) -> None:
     bucket = ensure_day(state, day)
     word = bucket.get("verified")
@@ -909,6 +928,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stuur direct een ntfy-test en stop, ook buiten de actieperiode.",
     )
+    parser.add_argument(
+        "--reset-today",
+        action="store_true",
+        help="Wis de teller van vandaag en luister opnieuw. Het vorige woord wordt niet gelogd.",
+    )
     return parser
 
 
@@ -917,11 +941,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     relay = False
     try:
+        now = config.now_amsterdam()
+        if args.reset_today:
+            clear_today(load_state(), now.date())
+
         if args.test:
             send_test_notification()
             return 0
 
-        now = config.now_amsterdam()
         if not config.in_campaign(now):
             start, end = config.campaign_bounds()
             log.info(

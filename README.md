@@ -10,8 +10,8 @@ Buiten dat venster stopt `main.py` direct, tenzij je `--test` gebruikt.
 
 1. Cron start om **06:00 Nederlandse tijd** (`05:00 UTC`; de hele actie valt in de wintertijd).
 2. ffmpeg neemt de stream op in stukken van **45 seconden** met **10 seconden overlap** (elke 35 seconden een nieuwe start). De overgang van ‘Vandaag is dat codewoord:’ naar Mickey valt daardoor niet precies op een knip. Elk bestand wordt na de transcriptie verwijderd.
-3. faster-whisper (`small`, `language=nl`, `compute_type=int8`, `beam_size=3`, `vad_filter=False`) maakt er Nederlandse tekst van. De initial prompt geeft de promo en een paar voorbeeldwoorden mee, zodat de korte hoge stem niet als geluidseffect verdwijnt. Het model blijft in de Hugging Face-cache van de workflow staan.
-4. Zinnen met `codewoord`, `disney`, `disneyland`, `woord van vandaag` of `kerstcodewoord` worden uitgelezen. Na `vandaag is dat codewoord`, `dat codewoord`, `is dat codewoord`, `codewoord:` of `het codewoord` (ook met dubbele punt, komma of punt ertussen) pakt de listener het eerstvolgende woord dat geen stopwoord is (`de`, `het`, `een`, `is`, `dat`, `van`, `vandaag`, `mickey`, `disney`, …). Zet Whisper het woord in het segment direct daarna, dan telt dat ene woord mee. Een echo van de voorbeeldlijst uit de prompt wordt genegeerd.
+3. faster-whisper (`small`, `language=nl`, `compute_type=int8`, `beam_size=3`, `vad_filter=False`) maakt er Nederlandse tekst van. De initial prompt is alleen een stijlaanwijzing (`Sky Radio Disney actie. Vandaag is dat codewoord:`) en noemt geen voorbeeldwoorden. Segmenten met `avg_logprob` onder -1.0 vallen weg, zodat muziek of een onverstaanbare stem geen gegokt woord oplevert. Het model blijft in de Hugging Face-cache van de workflow staan.
+4. Zinnen met `codewoord`, `disney`, `disneyland`, `woord van vandaag` of `kerstcodewoord` worden uitgelezen. Na `vandaag is dat codewoord`, `dat codewoord`, `is dat codewoord`, `codewoord:` of `het codewoord` (ook met dubbele punt, komma of punt ertussen) pakt de listener het eerstvolgende woord dat geen stopwoord is (`de`, `het`, `een`, `is`, `dat`, `van`, `vandaag`, `mickey`, `disney`, …). Zet Whisper het woord in het segment direct daarna, dan telt dat ene woord mee.
 5. Kleine spraak-naar-tekstfouten worden samengevoegd met `difflib.SequenceMatcher` (ratio ≥ 0.85). Dezelfde aankondiging in twee overlappende segmenten telt één keer: een nieuwe treffer moet minstens **60 seconden** na de vorige segmentstart vallen. Dat is langer dan de 35 seconden tussen twee starts, en kort genoeg om een latere herhaling apart te tellen.
 6. Bij de eerste treffer — ook als een zin wel `codewoord` bevat maar er geen woord uit te halen is — gaat er meteen een stille melding uit (`Priority: low`, titel `🔎 Kandidaat gehoord (1/2): {WOORD}`, body de letterlijke zin). Bij de tweede onafhankelijke treffer gaat er één POST naar `https://ntfy.sh/{NTFY_TOPIC}`:
    - Title: `🎄 Geverifieerd Disney Codewoord: {WOORD}`
@@ -20,7 +20,7 @@ Buiten dat venster stopt `main.py` direct, tenzij je `--test` gebruikt.
    - Click: de Sky Radio-actiepagina
    - Body: het woord plus de twee uitgeschreven zinnen
 7. Het script schrijft het woord naar `gevonden_codewoorden.json`. De workflow bewaart dat bestand in de Actions-cache en zet **geen** volgende runner klaar.
-8. Staat het woord voor vandaag al in dat bestand, dan stopt een nieuwe run meteen.
+8. Staat het woord voor vandaag al in dat bestand, dan stopt een nieuwe run meteen. Bij een valse treffer start je de workflow handmatig met **Wis de teller van vandaag**. Dat zet `--reset-today`: de telling van vandaag wordt leeggemaakt (zonder het oude woord in de log) en de run luistert opnieuw. De cache-stap daarna bewaart die lege teller, dus de volgende estafette erft hem.
 9. Is het budget van **325 minuten** op en het woord nog niet bevestigd, dan bewaart de run de kandidaten in de cache en start via `workflow_dispatch` de volgende runner. Om 23:59 lokale tijd stopt de dag zonder nieuwe runner; de cron van de volgende ochtend begint opnieuw.
 
 Tussen twee runners zit een korte wisselpauze (checkout, pip, cache). Binnen één runner is de opname continu.
@@ -75,5 +75,5 @@ Een echte luisterrun lokaal is dezelfde opdracht zonder `--test`, binnen de acti
 ## Handig om te weten
 
 - De stream is `https://playerservices.streamtheworld.com/api/livestream-redirect/SKYRADIO.mp3`.
-- Whisper draait met `beam_size=3`, `compute_type=int8` en zonder VAD-filter, zodat de hoge stem van Mickey in de transcriptie blijft. `DEBUG_TRANSCRIPTS=true` (of het vinkje bij handmatig starten) zet elke zin met `disney` of `codewoord` in de Actions-log. Standaard staat die optie uit.
+- Whisper draait met `beam_size=3`, `compute_type=int8`, `condition_on_previous_text=False`, `no_speech_threshold=0.6`, `log_prob_threshold=-1.0`, `compression_ratio_threshold=2.4` en zonder VAD-filter, zodat de hoge stem van Mickey in de transcriptie blijft en verzinsels bij muziek wegvallen. `DEBUG_TRANSCRIPTS=true` (of het vinkje bij handmatig starten) zet elke zin met `disney` of `codewoord` in de Actions-log. Standaard staat die optie uit.
 - De emoji in de ntfy-titel wordt als UTF-8 verstuurd. `requests` kan alleen latin-1-headers aan; `main.py` zet de titel daarom om voor verzending.

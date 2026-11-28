@@ -38,11 +38,17 @@ WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
 WHISPER_BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "3"))
 # Uit: de korte, hoge stem van Mickey wordt anders als geluidseffect weggeknipt.
 WHISPER_VAD_FILTER = _env_flag("WHISPER_VAD_FILTER", False)
+# Alleen stijl en de cue. Geen concrete zelfstandige naamwoorden: Whisper
+# hallucineert die anders als codewoord bij muziek of onverstaanbare audio.
 WHISPER_INITIAL_PROMPT = os.environ.get(
     "WHISPER_INITIAL_PROMPT",
-    "Sky Radio Disney kerst actie. Vandaag is dat codewoord: Parijs, fantasie, "
-    "betoverend, sneeuw, kasteel, kerstboom, rendier.",
+    "Sky Radio Disney actie. Vandaag is dat codewoord:",
 )
+# Streng tegen verzinsels. Een segment onder deze avg_logprob telt niet mee.
+WHISPER_NO_SPEECH_THRESHOLD = 0.6
+WHISPER_LOG_PROB_THRESHOLD = -1.0
+WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4
+WHISPER_MIN_AVG_LOGPROB = -1.0
 
 SEGMENT_SECONDS = int(os.environ.get("SEGMENT_SECONDS", "45"))
 # 45s opname, elke 35s een nieuwe start. De 10s overlap dekt de overgang
@@ -67,7 +73,7 @@ KEYWORDS = (
 )
 
 # Grammaticale woorden die geen codewoord zijn. Korte zelfstandige naamwoorden
-# zoals "ster" of "sneeuw" blijven juist wel geldig.
+# zoals "ster" blijven juist wel geldig.
 STOPWORDS = {
     "de",
     "het",
