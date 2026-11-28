@@ -10,6 +10,13 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = ROOT / "gevonden_codewoorden.json"
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().casefold() in {"1", "true", "yes", "ja", "on"}
+
 TIMEZONE = ZoneInfo("Europe/Amsterdam")
 CAMPAIGN_START = date(2026, 11, 27)
 CAMPAIGN_END = date(2026, 12, 24)
@@ -28,16 +35,28 @@ WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
 WHISPER_LANGUAGE = "nl"
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "int8")
+WHISPER_BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "3"))
+# Uit: de korte, hoge stem van Mickey wordt anders als geluidseffect weggeknipt.
+WHISPER_VAD_FILTER = _env_flag("WHISPER_VAD_FILTER", False)
+WHISPER_INITIAL_PROMPT = os.environ.get(
+    "WHISPER_INITIAL_PROMPT",
+    "Sky Radio Disney kerst actie. Vandaag is dat codewoord: Parijs, fantasie, "
+    "betoverend, sneeuw, kasteel, kerstboom, rendier.",
+)
 
 SEGMENT_SECONDS = int(os.environ.get("SEGMENT_SECONDS", "45"))
-OVERLAP_SECONDS = int(os.environ.get("OVERLAP_SECONDS", "5"))
-# Iets onder de 330 minuten, zodat afronden en git push binnen de job-timeout passen.
+# 45s opname, elke 35s een nieuwe start. De 10s overlap dekt de overgang
+# van de presentator naar de stem van Mickey.
+OVERLAP_SECONDS = int(os.environ.get("OVERLAP_SECONDS", "10"))
+# Iets onder de 330 minuten, zodat afronden en de cache-stap binnen de job-timeout passen.
 RUN_BUDGET_SECONDS = int(os.environ.get("RUN_BUDGET_SECONDS", str(325 * 60)))
-# Net langer dan de 40s tussen segmentstarts. Een woord zit hooguit in twee
-# opeenvolgende segmenten; een latere, echte herhaling telt weer apart.
+# Langer dan de 35s tussen segmentstarts. Dezelfde aankondiging in twee
+# overlappende segmenten telt één keer; een latere herhaling telt weer apart.
 MIN_CONFIRMATION_GAP_SECONDS = int(os.environ.get("MIN_CONFIRMATION_GAP_SECONDS", "60"))
 FUZZY_RATIO = float(os.environ.get("FUZZY_RATIO", "0.85"))
 CONFIRMATIONS_REQUIRED = int(os.environ.get("CONFIRMATIONS_REQUIRED", "2"))
+# Zet op true om elke zin met "disney" of "codewoord" in de Actions-log te zetten.
+DEBUG_TRANSCRIPTS = _env_flag("DEBUG_TRANSCRIPTS", False)
 
 KEYWORDS = (
     "codewoord",
@@ -73,6 +92,10 @@ STOPWORDS = {
     "luidt",
     "disney",
     "disneyland",
+    "mickey",
+    "mikkie",
+    "mouse",
+    "mickeymouse",
     "radio",
     "sky",
     "skyradio",
