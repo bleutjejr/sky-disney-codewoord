@@ -72,8 +72,37 @@ KEYWORDS = (
     "kerstcodewoord",
 )
 
+# Eenmalige breuk met de Actions-cache. Epoch 2 wist 2026-11-28 (hallucinatie
+# GELDERLAND) precies één keer; een latere epoch doet dat niet opnieuw.
+STATE_EPOCH = 2
+EPOCH_RESETS: dict[int, tuple[date, ...]] = {
+    2: (date(2026, 11, 28),),
+}
+
+# Whisper-hallucinaties en zender-/opvulwoorden. "disney" staat hier bewust niet
+# bij: dat kan zelf het codewoord zijn. "disneyland" blijft wel geblokkeerd,
+# maar is samen met "disney" nog steeds een trefwoord om de promo te herkennen.
+BLACKLIST = {
+    "gelderland",
+    "tv",
+    "ondertiteling",
+    "amara",
+    "bedankt",
+    "kijken",
+    "sky",
+    "radio",
+    "app",
+    "disneyland",
+    "codewoord",
+    "vandaag",
+    "vul",
+    "veel",
+    "daar",
+    "in",
+}
+
 # Grammaticale woorden die geen codewoord zijn. Korte zelfstandige naamwoorden
-# zoals "ster" blijven juist wel geldig.
+# zoals "ster" blijven juist wel geldig. "disney" ook: dat kan het codewoord zijn.
 STOPWORDS = {
     "de",
     "het",
@@ -96,7 +125,6 @@ STOPWORDS = {
     "u",
     "is",
     "luidt",
-    "disney",
     "disneyland",
     "mickey",
     "mikkie",

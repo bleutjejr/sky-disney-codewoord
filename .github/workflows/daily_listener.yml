@@ -64,8 +64,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: gevonden_codewoorden.json
-          key: codewoorden-${{ github.run_id }}-${{ github.run_attempt }}
+          key: codewoorden-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            codewoorden-v2-
             codewoorden-
 
       - name: Zorg dat het toestandsbestand bestaat
@@ -137,7 +138,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: gevonden_codewoorden.json
-          key: codewoorden-${{ github.run_id }}-${{ github.run_attempt }}
+          key: codewoorden-v2-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Start volgende estafette-runner
         if: steps.luister.outputs.relay == 'true' && inputs.test != true

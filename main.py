@@ -46,6 +46,17 @@ CUE_RE = re.compile(
     rf")",
     re.IGNORECASE,
 )
+# Vervolgzin uit de promo: "vul daar dit codewoord in. Fantasie".
+# Whisper schrijft "vul" soms als "veel" of "vol". Het woord direct erna is het codewoord.
+FOLLOWUP_RE = re.compile(
+    r"(?:(?:\b(?:vul|veel|vol)\b\s+daar\s+)?"
+    r"\bdit\s+codewoord\s+in)"
+    r"[.,:!?\s]+"
+    r"([a-zA-ZÀ-ÿ-]+)",
+    re.IGNORECASE,
+)
+# Hoger dan de cue "vandaag is dat codewoord", zodat Fantasie een hallucinatie ervoor wint.
+FOLLOWUP_SCORE = 4
 TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{0,40}")
 # Hoeveel tokens ná de cue we nog naar het codewoord zoeken.
 CUE_LOOKAHEAD = 10
@@ -95,9 +106,10 @@ def has_keyword(text: str) -> bool:
 
 def clean_candidate(raw: str) -> str | None:
     word = raw.strip(".,!?;:\"“”‘’()[]{}").strip("-'")
-    if len(normalize_word(word)) < 3:
+    key = normalize_word(word)
+    if len(key) < 3:
         return None
-    if normalize_word(word) in config.STOPWORDS:
+    if key in config.STOPWORDS or key in config.BLACKLIST:
         return None
     if not re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,40}", word):
         return None
@@ -117,13 +129,23 @@ def cue_specificity(cue: str) -> int:
 
 
 def next_meaningful_word(text: str, start: int, limit: int = CUE_LOOKAHEAD) -> tuple[str, int] | None:
-    """Eerste woord na start dat geen stopwoord of leesteken is."""
+    """Eerste woord na start dat geen stopwoord of leesteken is.
+
+    Een blacklist-woord (hallucinatie of opvulwoord) stopt het zoeken: de cue
+    slaagt dan niet, in plaats van een later woord uit de zin te pakken.
+    """
     seen = 0
     for match in TOKEN_RE.finditer(text, start):
         seen += 1
         if seen > limit:
             return None
-        cleaned = clean_candidate(match.group(0))
+        raw = match.group(0)
+        key = normalize_word(raw)
+        if key in config.STOPWORDS:
+            continue
+        if key in config.BLACKLIST:
+            return None
+        cleaned = clean_candidate(raw)
         if cleaned is None:
             continue
         return cleaned, match.end()
@@ -151,6 +173,16 @@ def candidates_in_text(text: str) -> tuple[dict[str, tuple[int, str, str]], bool
     """Zoek codewoorden na een cue. Tweede waarde: er was een cue zonder woord."""
     found: dict[str, tuple[int, str, str]] = {}
     bare_cue = False
+    for match in FOLLOWUP_RE.finditer(text):
+        cleaned = clean_candidate(match.group(1))
+        if cleaned is None:
+            continue
+        _remember(
+            found,
+            cleaned,
+            phrase_around(text, match.start(), match.end()),
+            FOLLOWUP_SCORE,
+        )
     for match in CUE_RE.finditer(text):
         score = cue_specificity(match.group("cue"))
         # Een dubbele punt direct na de cue hoort bij de promo, ook bij los "codewoord:".
@@ -895,6 +927,32 @@ def listen(state: dict, day: date) -> str:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def apply_state_epoch(state: dict) -> None:
+    """Wis de dagen van een nieuwe cache-epoch één keer.
+
+    Staat de epoch al in het toestandsbestand, dan blijft een later gevonden
+    woord van die dag staan. Het gewiste woord wordt niet gelogd.
+    """
+    current = state.get("_epoch")
+    if not isinstance(current, int):
+        current = 0
+    if current >= config.STATE_EPOCH:
+        return
+    cleared: list[str] = []
+    for epoch in range(current + 1, config.STATE_EPOCH + 1):
+        for day in config.EPOCH_RESETS.get(epoch, ()):
+            key = day.isoformat()
+            if key in state:
+                state.pop(key)
+                cleared.append(key)
+    state["_epoch"] = config.STATE_EPOCH
+    save_state(state)
+    if cleared:
+        log.info("Eenmalige reset (epoch %s) voor %s.", config.STATE_EPOCH, ", ".join(cleared))
+    else:
+        log.info("Cache-epoch %s vastgelegd.", config.STATE_EPOCH)
+
+
 def clear_today(state: dict, day: date) -> None:
     """Wis kandidaten en een eventuele bevestiging van deze kalenderdag.
 
@@ -942,8 +1000,10 @@ def main(argv: list[str] | None = None) -> int:
     relay = False
     try:
         now = config.now_amsterdam()
+        state = load_state()
+        apply_state_epoch(state)
         if args.reset_today:
-            clear_today(load_state(), now.date())
+            clear_today(state, now.date())
 
         if args.test:
             send_test_notification()
