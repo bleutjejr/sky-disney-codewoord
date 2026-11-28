@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      debug_transcripts:
+        description: Zinnen met disney of codewoord in de log zetten
+        required: false
+        type: boolean
+        default: false
 
 # Eén luisteraar tegelijk. Een estafette-run wacht tot de vorige job klaar is.
 concurrency:
@@ -83,7 +88,16 @@ jobs:
               handle.setsampwidth(2)
               handle.setframerate(16000)
               handle.writeframes(b"\x00\x00" * 16000)
-          segments, _info = model.transcribe(str(path), language="nl", beam_size=1, vad_filter=True)
+          segments, _info = model.transcribe(
+              str(path),
+              language="nl",
+              beam_size=3,
+              vad_filter=False,
+              initial_prompt=(
+                  "Sky Radio Disney kerst actie. Vandaag is dat codewoord: "
+                  "Parijs, fantasie, betoverend, sneeuw, kasteel, kerstboom, rendier."
+              ),
+          )
           list(segments)
           path.unlink(missing_ok=True)
           print("Whisper-model gereed")
@@ -96,6 +110,7 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           HF_HOME: /home/runner/.cache/huggingface
           PYTHONUNBUFFERED: "1"
+          DEBUG_TRANSCRIPTS: ${{ inputs.debug_transcripts == true && 'true' || 'false' }}
         run: |
           if [ "${{ inputs.test }}" = "true" ]; then
             python main.py --test
