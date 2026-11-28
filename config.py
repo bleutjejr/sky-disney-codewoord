@@ -83,14 +83,16 @@ EPOCH_RESETS: dict[int, tuple[date, ...]] = {
 
 # Alleen de woordsoort. Of het een Nederlands woord is, beslist wordfreq.
 SPACY_MODEL = "nl_core_news_md"
-# zipf >= 2.5 is een gewoon Nederlands woord. Daaronder mag een kleine
-# transcriptiefout nog naar een woord van vergelijkbare lengte (hooguit
-# één letter verschil). Een ruimer venster trekt Fotosie naar fotoserie;
-# Fantasie zelf scoort maar 0.67 en haalt de cutoff van 0.78 niet.
+# zipf >= 2.5 is een gewoon Nederlands woord. Daaronder mag een fonetische
+# misser nog worden rechtgezet: 'ph' telt als f, klinkers vallen samen, en
+# die vorm moet cutoff 0.78 halen. De gewone spelling moet daarnaast nog
+# minstens 0.65 lijken, anders wordt qwerty een willekeurig Nederlands woord.
+# Photosie en Fotosie vallen zo op Fantasie; fotoserie blijft lager scoren.
 ZIPF_MIN = 2.5
 # Nederlands mag hooguit een half punt lager liggen dan Engels.
 ZIPF_EN_MARGIN = 0.5
 CLOSE_CUTOFF = 0.78
+CLOSE_RAW_FLOOR = 0.65
 WORDFREQ_TOP_N = 25000
 CLOSE_LENGTH_DELTA = 1
 

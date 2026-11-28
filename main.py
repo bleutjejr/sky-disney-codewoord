@@ -77,6 +77,9 @@ def collapse(text: str) -> str:
 
 
 _DUTCH_WORDS: list[str] | None = None
+_PHONETIC_KEYS: list[str] | None = None
+_PHONETIC_WORDS: dict[str, list[str]] | None = None
+_VOWELS = set("aeiouyàáâäèéêëìíîïòóôöùúûüÿ")
 
 
 def load_nlp():
@@ -88,7 +91,7 @@ def load_nlp():
 
 
 def dutch_words() -> list[str]:
-    global _DUTCH_WORDS
+    global _DUTCH_WORDS, _PHONETIC_KEYS, _PHONETIC_WORDS
     if _DUTCH_WORDS is None:
         from wordfreq import top_n_list
 
@@ -101,8 +104,25 @@ def dutch_words() -> list[str]:
             seen.add(key)
             words.append(key)
         _DUTCH_WORDS = words
+        grouped: dict[str, list[str]] = {}
+        for word in words:
+            grouped.setdefault(phonetic_key(word), []).append(word)
+        _PHONETIC_WORDS = grouped
+        _PHONETIC_KEYS = list(grouped)
         log.info("Nederlandse woordenlijst geladen: %s woorden.", len(words))
     return _DUTCH_WORDS
+
+
+def phonetic_key(word: str) -> str:
+    """Vorm waarin een hoge stem 'Fantasie' als Photosie of Fotosie kan klinken."""
+    folded = word.casefold().replace("ph", "f")
+    out: list[str] = []
+    for char in folded:
+        piece = "a" if char in _VOWELS else char
+        if out and out[-1] == piece:
+            continue
+        out.append(piece)
+    return "".join(out)
 
 
 def _display_word(raw: str) -> str:
@@ -137,12 +157,23 @@ def _is_noun(nlp, word: str) -> bool:
 
 
 def _close_dutch_words(key: str) -> list[str]:
-    pool = [
-        word
-        for word in dutch_words()
-        if word != key and abs(len(word) - len(key)) <= config.CLOSE_LENGTH_DELTA
-    ]
-    return get_close_matches(key, pool, n=5, cutoff=config.CLOSE_CUTOFF)
+    dutch_words()
+    spoken = phonetic_key(key)
+    surface = key.casefold().replace("ph", "f")
+    hits = get_close_matches(spoken, _PHONETIC_KEYS or [], n=8, cutoff=config.CLOSE_CUTOFF)
+    if not hits:
+        return []
+    scored: list[tuple[float, float, str]] = []
+    for code in hits:
+        phonetic = SequenceMatcher(None, spoken, code).ratio()
+        for word in (_PHONETIC_WORDS or {}).get(code, ()):
+            if word == key or abs(len(word) - len(key)) > config.CLOSE_LENGTH_DELTA:
+                continue
+            if SequenceMatcher(None, surface, word).ratio() < config.CLOSE_RAW_FLOOR:
+                continue
+            scored.append((phonetic, _zipf(word, "nl"), word))
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    return [word for _phonetic, _zipf_nl, word in scored]
 
 
 def judge_word(nlp, raw: str) -> tuple[bool, str, str]:
