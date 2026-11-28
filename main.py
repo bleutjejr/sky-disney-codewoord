@@ -2,10 +2,10 @@
 """Luister naar Sky Radio en bevestig het Disney-codewoord van de dag.
 
 De opname loopt in segmenten van 45 seconden met 10 seconden overlap
-(elke 35 seconden een nieuwe start). Een kandidaat telt pas als geverifieerd
-nadat hij twee keer onafhankelijk is gehoord (fuzzy-drempel 0.85, minimale
-tussenpauze 60 seconden). De eerste treffer gaat meteen als stille ntfy-melding
-de deur uit.
+(elke 35 seconden een nieuwe start). Het codewoord is het losse woord direct
+na een van de twee promo's, en telt alleen als het één Nederlands zelfstandig
+naamwoord is. Een kandidaat is pas geverifieerd nadat hij twee keer
+onafhankelijk is gehoord (fuzzy-drempel 0.85, minimale tussenpauze 60 seconden).
 """
 
 from __future__ import annotations
@@ -30,36 +30,17 @@ import config
 
 log = logging.getLogger("codewoord")
 
-# Scheiding tussen de vaste woorden van de promo: spaties, of : , . ertussen.
-_GAP = r"[\s\"“”‘’'’:.,;!?\-–—]+"
-_CODEWOORD = r"\b(?:kerst)?codewoord\b"
-# Langste vorm eerst, zodat "vandaag is dat codewoord" niet uit elkaar valt
-# in het kortere "dat codewoord" of los "codewoord".
-CUE_RE = re.compile(
-    rf"(?P<cue>"
-    rf"\bvandaag{_GAP}is{_GAP}dat{_GAP}{_CODEWOORD}"
-    rf"|\bis{_GAP}dat{_GAP}{_CODEWOORD}"
-    rf"|\bdat{_GAP}{_CODEWOORD}"
-    rf"|\b(?:het|de){_GAP}{_CODEWOORD}"
-    rf"|\bwoord{_GAP}van{_GAP}vandaag\b"
-    rf"|{_CODEWOORD}"
-    rf")",
+# Het eerstvolgende losse woord direct na de twee promo-varianten.
+# Whisper schrijft "vul" soms als "veel" of "vol".
+PATTERN_DAT = re.compile(
+    r"(?:vandaag\s+is\s+)?dat\s+codewoord[.,:!?\s]+([a-zA-ZÀ-ÿ-]+)",
     re.IGNORECASE,
 )
-# Vervolgzin uit de promo: "vul daar dit codewoord in. Fantasie".
-# Whisper schrijft "vul" soms als "veel" of "vol". Het woord direct erna is het codewoord.
-FOLLOWUP_RE = re.compile(
-    r"(?:(?:\b(?:vul|veel|vol)\b\s+daar\s+)?"
-    r"\bdit\s+codewoord\s+in)"
-    r"[.,:!?\s]+"
-    r"([a-zA-ZÀ-ÿ-]+)",
+PATTERN_IN = re.compile(
+    r"(?:vul|veel|vol)?\s*daar\s+dit\s+codewoord\s+in[.,:!?\s]+([a-zA-ZÀ-ÿ-]+)",
     re.IGNORECASE,
 )
-# Hoger dan de cue "vandaag is dat codewoord", zodat Fantasie een hallucinatie ervoor wint.
-FOLLOWUP_SCORE = 4
-TOKEN_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{0,40}")
-# Hoeveel tokens ná de cue we nog naar het codewoord zoeken.
-CUE_LOOKAHEAD = 10
+_NOUNS = frozenset({"NOUN", "PROPN"})
 
 MIN_WAV_BYTES = 44 + 16000 * 2 * 5
 STATE_LOCK = threading.Lock()
@@ -80,6 +61,7 @@ def setup_logging() -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(logging.INFO)
+    logging.getLogger("spacy").setLevel(logging.ERROR)
 
 
 def normalize_word(word: str) -> str:
@@ -94,180 +76,92 @@ def collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def split_sentences(text: str) -> list[str]:
-    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
-    return [collapse(part) for part in parts if collapse(part)]
+def load_nlp():
+    import spacy
+
+    log.info("spaCy laden: %s", config.SPACY_MODEL)
+    return spacy.load(config.SPACY_MODEL)
 
 
-def has_keyword(text: str) -> bool:
-    folded = text.casefold()
-    return any(keyword in folded for keyword in config.KEYWORDS)
+def _display_word(raw: str) -> str:
+    return raw.strip().strip(".,!?;:\"“”‘’()[]{}").strip("-'")
 
 
-def clean_candidate(raw: str) -> str | None:
-    word = raw.strip(".,!?;:\"“”‘’()[]{}").strip("-'")
+def judge_word(nlp, raw: str) -> tuple[bool, str, str]:
+    """Controleer één geëxtraheerd woord. Geeft (geldig, weergave, reden)."""
+    word = _display_word(raw)
     key = normalize_word(word)
-    if len(key) < 3:
-        return None
-    if key in config.STOPWORDS or key in config.BLACKLIST:
-        return None
-    if not re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'\-]{2,40}", word):
-        return None
-    return word
+    if not key:
+        return False, word, "afgewezen: geen zelfstandig naamwoord"
+    if key in config.BLACKLIST:
+        return False, word, "afgewezen: blacklist"
+    if key == "disney":
+        return True, word, "geaccepteerd"
+    doc = nlp(word)
+    tokens = [token for token in doc if not token.is_space and not token.is_punct]
+    if len(tokens) != 1 or tokens[0].pos_ not in _NOUNS:
+        return False, word, "afgewezen: geen zelfstandig naamwoord"
+    if tokens[0].is_oov:
+        return False, word, "afgewezen: niet in het Nederlandse vocabulaire"
+    return True, word, "geaccepteerd"
 
 
-def cue_specificity(cue: str) -> int:
-    """Hogere score = dichter bij de echte promo 'Vandaag is dat codewoord:'."""
-    folded = collapse(cue).casefold()
-    if "vandaag" in folded and "is" in folded and "codewoord" in folded:
-        return 3
-    if re.search(r"\bdat\b", folded) and "codewoord" in folded:
-        return 2
-    if "woord van vandaag" in folded or folded.endswith(":"):
-        return 2
-    return 1
+def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
+    spans: list[tuple[int, int, str]] = []
+    start = 0
+    for match in re.finditer(r"(?<=[.!?])\s+|\n+", text):
+        sentence = collapse(text[start:match.start()])
+        if sentence:
+            spans.append((start, match.start(), sentence))
+        start = match.end()
+    sentence = collapse(text[start:])
+    if sentence:
+        spans.append((start, len(text), sentence))
+    return spans
 
 
-def next_meaningful_word(text: str, start: int, limit: int = CUE_LOOKAHEAD) -> tuple[str, int] | None:
-    """Eerste woord na start dat geen stopwoord of leesteken is.
+def _pattern_matches(text: str) -> list[re.Match]:
+    found: list[re.Match] = []
+    seen: set[tuple[int, int]] = set()
+    for pattern in (PATTERN_DAT, PATTERN_IN):
+        for match in pattern.finditer(text):
+            span = (match.start(1), match.end(1))
+            if span in seen:
+                continue
+            seen.add(span)
+            found.append(match)
+    found.sort(key=lambda match: match.start(1))
+    return found
 
-    Een blacklist-woord (hallucinatie of opvulwoord) stopt het zoeken: de cue
-    slaagt dan niet, in plaats van een later woord uit de zin te pakken.
-    """
-    seen = 0
-    for match in TOKEN_RE.finditer(text, start):
-        seen += 1
-        if seen > limit:
-            return None
-        raw = match.group(0)
-        key = normalize_word(raw)
-        if key in config.STOPWORDS:
+
+def review_transcript(nlp, text: str) -> list[tuple[str, str]]:
+    """Log elke zin met 'codewoord' en geef de geaccepteerde (woord, zin)-paren."""
+    spans = _sentence_spans(text)
+    if not spans and "codewoord" in text.casefold():
+        spans = [(0, len(text), collapse(text))]
+    matches = _pattern_matches(text)
+    accepted: list[tuple[str, str]] = []
+    for start, end, sentence in spans:
+        if "codewoord" not in sentence.casefold():
             continue
-        if key in config.BLACKLIST:
-            return None
-        cleaned = clean_candidate(raw)
-        if cleaned is None:
+        sentence_matches = [match for match in matches if start <= match.start() < end]
+        if not sentence_matches:
+            log.info("Zin: %s | geëxtraheerd: — | afgewezen: geen woord na het patroon", sentence)
             continue
-        return cleaned, match.end()
-    return None
-
-
-def phrase_around(text: str, cue_start: int, word_end: int) -> str:
-    """De promozin: vanaf de cue (of het laatste leesteken ervoor) tot en met het woord."""
-    left = max(0, cue_start - 80)
-    for index in range(cue_start - 1, left - 1, -1):
-        if text[index] in ".!?\n":
-            left = index + 1
-            break
-    return collapse(text[left:word_end])[:400]
-
-
-def _remember(found: dict[str, tuple[int, str, str]], word: str, phrase: str, score: int) -> None:
-    key = normalize_word(word)
-    previous = found.get(key)
-    if previous is None or score > previous[0] or (score == previous[0] and len(phrase) > len(previous[2])):
-        found[key] = (score, word, phrase)
-
-
-def candidates_in_text(text: str) -> tuple[dict[str, tuple[int, str, str]], bool]:
-    """Zoek codewoorden na een cue. Tweede waarde: er was een cue zonder woord."""
-    found: dict[str, tuple[int, str, str]] = {}
-    bare_cue = False
-    for match in FOLLOWUP_RE.finditer(text):
-        cleaned = clean_candidate(match.group(1))
-        if cleaned is None:
-            continue
-        _remember(
-            found,
-            cleaned,
-            phrase_around(text, match.start(), match.end()),
-            FOLLOWUP_SCORE,
-        )
-    for match in CUE_RE.finditer(text):
-        score = cue_specificity(match.group("cue"))
-        # Een dubbele punt direct na de cue hoort bij de promo, ook bij los "codewoord:".
-        tail = text[match.end() : match.end() + 4]
-        if ":" in tail:
-            score = max(score, 2)
-        hit = next_meaningful_word(text, match.end())
-        if hit is None:
-            bare_cue = True
-            continue
-        word, word_end = hit
-        _remember(found, word, phrase_around(text, match.start(), word_end), score)
-    return found, bare_cue
-
-
-def _prefer_specific(found: dict[str, tuple[int, str, str]]) -> list[tuple[str, str]]:
-    if not found:
-        return []
-    best = max(item[0] for item in found.values())
-    # Een vage 'het codewoord' mag een latere, precieze promo niet overstemmen.
-    if best >= 2:
-        found = {key: item for key, item in found.items() if item[0] >= 2}
-    return [(word, phrase) for _score, word, phrase in found.values()]
-
-
-def _sentence_with(text: str, needle: str) -> str:
-    target = needle.casefold()
-    for sentence in split_sentences(text):
-        if target in sentence.casefold():
-            return sentence
-    return collapse(text)[:400]
-
-
-def extract_from_parts(parts: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
-    """Geef (woord, zin) en zinnen waarin 'codewoord' viel maar geen woord volgde.
-
-    Whisper zet de stem van Mickey soms in het segment direct na de cue.
-    Die twee segmenten worden samen gelezen, en ook de samengevoegde tekst.
-    """
-    cleaned = [collapse(part) for part in parts if collapse(part)]
-    found: dict[str, tuple[int, str, str]] = {}
-    unresolved: list[str] = []
-
-    for index, part in enumerate(cleaned):
-        part_found, bare = candidates_in_text(part)
-        for key, item in part_found.items():
-            previous = found.get(key)
-            if previous is None or item[0] > previous[0]:
-                found[key] = item
-        if bare and index + 1 < len(cleaned):
-            follower = cleaned[index + 1]
-            tokens = TOKEN_RE.findall(follower)
-            content = [token for token in tokens if clean_candidate(token)]
-            # Mickey zegt één woord; een langer volgend segment is gewone presentatie.
-            if 0 < len(tokens) <= 4 and len(content) == 1:
-                hit = next_meaningful_word(follower, 0, limit=3)
-                if hit is not None:
-                    word, word_end = hit
-                    phrase = collapse(f"{part} {follower[:word_end]}")[:400]
-                    _remember(found, word, phrase, 3)
-                    bare = False
-                    log.info("Codewoord uit het Whisper-segment direct na de cue: %s", word)
-        if bare and CUE_RE.search(part):
-            unresolved.append(_sentence_with(part, "codewoord") if "codewoord" in part.casefold() else collapse(part)[:400])
-
-    joined = collapse(" ".join(parts))
-    joined_found, joined_bare = candidates_in_text(joined)
-    for key, item in joined_found.items():
-        previous = found.get(key)
-        if previous is None or item[0] > previous[0] or (
-            item[0] == previous[0] and "codewoord" in item[2].casefold() and "codewoord" not in previous[2].casefold()
-        ):
-            found[key] = item
-
-    winners = _prefer_specific(found)
-    if winners:
-        return winners, []
-    if not unresolved and joined_bare and "codewoord" in joined.casefold():
-        unresolved.append(_sentence_with(joined, "codewoord"))
-    # Eén melding per chunk is genoeg; de kortste zin met het woord codewoord.
-    unresolved = [sentence for sentence in unresolved if "codewoord" in sentence.casefold()]
-    if not unresolved:
-        return [], []
-    unresolved.sort(key=len)
-    return [], [unresolved[0]]
+        seen_words: set[str] = set()
+        for match in sentence_matches:
+            raw = match.group(1)
+            key = normalize_word(raw)
+            if key in seen_words:
+                continue
+            seen_words.add(key)
+            ok, word, reason = judge_word(nlp, raw)
+            if ok:
+                log.info("Zin: %s | geëxtraheerd: %s | geaccepteerd", sentence, word)
+                accepted.append((word, sentence))
+            else:
+                log.info("Zin: %s | geëxtraheerd: %s | %s", sentence, word or raw, reason)
+    return accepted
 
 
 def blank_day() -> dict:
@@ -415,8 +309,8 @@ def send_verified(word: str, phrases: list[str]) -> None:
 
 
 def send_candidate_alert(word: str, phrase: str) -> None:
-    """Stille melding bij de eerste treffer, of als het woord niet te isoleren was."""
-    title = f"🔎 Kandidaat gehoord (1/{config.CONFIRMATIONS_REQUIRED}): {word}"
+    """Lage-prioriteit melding bij de eerste geldige treffer."""
+    title = f"🔎 Kandidaat (1/2): {word}"
     send_ntfy(title, phrase.strip() + "\n", tags="mag,radio", priority="low")
 
 
@@ -527,12 +421,6 @@ def record_loop(
                     )
                 path.unlink(missing_ok=True)
                 continue
-            log.info(
-                "Segment %s klaar (%.0f KB, start %s).",
-                path.name,
-                path.stat().st_size / 1024,
-                item["started"].strftime("%H:%M:%S"),
-            )
             audio.put(item)
         active[:] = still
 
@@ -548,12 +436,6 @@ def record_loop(
             started = config.now_amsterdam()
             proc = start_ffmpeg(path)
             active.append({"proc": proc, "path": path, "started": started})
-            log.info(
-                "Opname %s gestart (%ss, overlap %ss).",
-                path.name,
-                config.SEGMENT_SECONDS,
-                config.OVERLAP_SECONDS,
-            )
             next_start = time.monotonic() + step
         if verified.is_set():
             return
@@ -616,7 +498,6 @@ def transcribe(model, path: Path) -> list[str]:
     Segmenten met een te lage kans (muziek, effecten, onverstaanbare stem) vallen
     weg. De tekst daarvan gaat niet naar de log, zodat een verzinsel niet blijft hangen.
     """
-    started = time.monotonic()
     segments, _info = model.transcribe(
         str(path),
         language=config.WHISPER_LANGUAGE,
@@ -631,33 +512,12 @@ def transcribe(model, path: Path) -> list[str]:
         compression_ratio_threshold=config.WHISPER_COMPRESSION_RATIO_THRESHOLD,
     )
     parts: list[str] = []
-    dropped = 0
     for segment in segments:
         text = usable_segment_text(segment)
         if text is None:
-            if collapse(getattr(segment, "text", None) or ""):
-                dropped += 1
             continue
         parts.append(text)
-    log.info(
-        "Transcriptie %s in %.1fs (%s whisper-segmenten, %s genegeerd wegens lage kans, beam=%s, vad=%s).",
-        path.name,
-        time.monotonic() - started,
-        len(parts),
-        dropped,
-        config.WHISPER_BEAM_SIZE,
-        config.WHISPER_VAD_FILTER,
-    )
     return parts
-
-
-def log_debug_sentences(text: str) -> None:
-    if not config.DEBUG_TRANSCRIPTS:
-        return
-    for sentence in split_sentences(text):
-        folded = sentence.casefold()
-        if "disney" in folded or "codewoord" in folded:
-            log.info("DEBUG transcript: %s", sentence)
 
 
 def register_hearing(
@@ -750,37 +610,6 @@ def register_hearing(
     return True
 
 
-def register_unresolved(state: dict, day: date, phrase: str, heard_at: datetime) -> None:
-    """Lage-prioriteit melding als een zin 'codewoord' bevat maar geen woord oplevert."""
-    with STATE_LOCK:
-        bucket = ensure_day(state, day)
-        if bucket.get("verified"):
-            return
-        alerts = bucket.setdefault("unresolved_alerts", [])
-        for note in alerts:
-            previous = datetime.fromisoformat(note["at"])
-            if heard_at - previous < timedelta(seconds=config.MIN_CONFIRMATION_GAP_SECONDS):
-                earlier = collapse(note.get("phrase", "")).casefold()
-                if SequenceMatcher(None, earlier, collapse(phrase).casefold()).ratio() >= 0.85:
-                    log.info("Zin met codewoord lijkt op een recente melding; overlap telt niet opnieuw.")
-                    return
-        alerts.append({"at": heard_at.isoformat(timespec="seconds"), "phrase": phrase})
-        if len(alerts) > 40:
-            del alerts[:-40]
-        save_state(state)
-    try:
-        send_candidate_alert("?", phrase)
-    except Exception:
-        log.exception("Melding zonder geïsoleerd woord mislukt; luisteren gaat door.")
-        with STATE_LOCK:
-            alerts = ensure_day(state, day).get("unresolved_alerts") or []
-            if alerts and alerts[-1].get("phrase") == phrase:
-                alerts.pop()
-                save_state(state)
-        return
-    log.info("Lage-prioriteit melding verstuurd voor een zin zonder geïsoleerd woord.")
-
-
 def process_loop(
     audio: queue.Queue,
     stop: threading.Event,
@@ -790,11 +619,12 @@ def process_loop(
     fatal: list[BaseException],
 ) -> None:
     try:
+        nlp = load_nlp()
         model = load_model()
     except Exception as exc:
         fatal.append(exc)
         stop.set()
-        log.exception("Whisper laden mislukt.")
+        log.exception("Model laden mislukt.")
         return
     while not verified.is_set():
         try:
@@ -813,26 +643,14 @@ def process_loop(
                 log.exception("Transcriptie van %s mislukt.", path.name)
                 continue
             text = collapse(" ".join(parts))
-            if not text:
-                log.info("Leeg transcript voor %s.", path.name)
-                continue
-            log_debug_sentences(text)
-            if not has_keyword(text):
-                log.info("Geen trefwoord in %s (%s tekens).", path.name, len(text))
-                continue
-            candidates, unresolved = extract_from_parts(parts)
-            if not candidates and not unresolved:
-                log.info("Trefwoord in %s, geen codewoord-zin (%s tekens).", path.name, len(text))
+            if not text or "codewoord" not in text.casefold():
                 continue
             heard_at = item["started"]
             verified_now = False
-            for word, phrase in candidates:
+            for word, phrase in review_transcript(nlp, text):
                 if register_hearing(state, day, word, phrase, heard_at):
                     verified_now = True
                     break
-            if not candidates:
-                for phrase in unresolved:
-                    register_unresolved(state, day, phrase, heard_at)
             if verified_now:
                 verified.set()
                 stop.set()

@@ -49,8 +49,13 @@ jobs:
       - name: ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      # Zelfde pip-cache als requirements.txt (setup-python cache: pip).
+      # md in plaats van sm: sm heeft geen vectoren, dus token.is_oov is daar altijd True.
       - name: Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          python -m spacy download nl_core_news_md
+          python -c "import spacy; spacy.load('nl_core_news_md'); print('nl_core_news_md gereed')"
 
       - name: Cache Whisper-model
         uses: actions/cache@v4
@@ -64,10 +69,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: gevonden_codewoorden.json
-          key: codewoorden-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: codewoorden-v4-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            codewoorden-v2-
-            codewoorden-
+            codewoorden-v4-
 
       - name: Zorg dat het toestandsbestand bestaat
         run: |
@@ -138,7 +142,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: gevonden_codewoorden.json
-          key: codewoorden-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: codewoorden-v4-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Start volgende estafette-runner
         if: steps.luister.outputs.relay == 'true' && inputs.test != true

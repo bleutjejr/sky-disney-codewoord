@@ -72,16 +72,22 @@ KEYWORDS = (
     "kerstcodewoord",
 )
 
-# Eenmalige breuk met de Actions-cache. Epoch 2 wist 2026-11-28 (hallucinatie
-# GELDERLAND) precies één keer; een latere epoch doet dat niet opnieuw.
-STATE_EPOCH = 2
+# Eenmalige breuk met de Actions-cache. Epoch 4 wist 2026-11-28 (Zang en
+# GELDERLAND) precies één keer, ook als een oudere cache toch binnenkomt.
+# De workflow zelf gebruikt cache-sleutel codewoorden-v4.
+STATE_EPOCH = 4
 EPOCH_RESETS: dict[int, tuple[date, ...]] = {
     2: (date(2026, 11, 28),),
+    4: (date(2026, 11, 28),),
 }
 
-# Whisper-hallucinaties en zender-/opvulwoorden. "disney" staat hier bewust niet
-# bij: dat kan zelf het codewoord zijn. "disneyland" blijft wel geblokkeerd,
-# maar is samen met "disney" nog steeds een trefwoord om de promo te herkennen.
+# nl_core_news_sm heeft geen woordvectoren, dus token.is_oov is daar altijd
+# True en zou ook Fantasie afwijzen. md is het kleinste Nederlandse model
+# waarbij is_oov betekent: dit woord staat niet in het vocabulaire.
+SPACY_MODEL = "nl_core_news_md"
+
+# Whisper-hallucinaties, Engelse songtekst en zender-/opvulwoorden.
+# "disney" staat hier bewust niet bij: dat kan zelf het codewoord zijn.
 BLACKLIST = {
     "gelderland",
     "tv",
@@ -89,79 +95,24 @@ BLACKLIST = {
     "amara",
     "bedankt",
     "kijken",
+    "zang",
+    "song",
+    "music",
+    "christmas",
+    "love",
     "sky",
     "radio",
     "app",
     "disneyland",
     "codewoord",
     "vandaag",
+    "ga",
+    "naar",
     "vul",
     "veel",
+    "vol",
     "daar",
     "in",
-}
-
-# Grammaticale woorden die geen codewoord zijn. Korte zelfstandige naamwoorden
-# zoals "ster" blijven juist wel geldig. "disney" ook: dat kan het codewoord zijn.
-STOPWORDS = {
-    "de",
-    "het",
-    "een",
-    "van",
-    "vandaag",
-    "dag",
-    "voor",
-    "naar",
-    "met",
-    "dat",
-    "die",
-    "deze",
-    "dit",
-    "ons",
-    "onze",
-    "jouw",
-    "je",
-    "jij",
-    "u",
-    "is",
-    "luidt",
-    "disneyland",
-    "mickey",
-    "mikkie",
-    "mouse",
-    "mickeymouse",
-    "radio",
-    "sky",
-    "skyradio",
-    "codewoord",
-    "kerstcodewoord",
-    "woord",
-    "hetzelfde",
-    "volgende",
-    "ook",
-    "nog",
-    "niet",
-    "wel",
-    "maar",
-    "want",
-    "dus",
-    "als",
-    "dan",
-    "bij",
-    "uit",
-    "aan",
-    "tot",
-    "over",
-    "door",
-    "en",
-    "of",
-    "op",
-    "in",
-    "te",
-    "om",
-    "luister",
-    "noteer",
-    "noteren",
 }
 
 
