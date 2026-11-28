@@ -3,3 +3,4 @@ av<19
 requests>=2.32.0
 tzdata>=2024.2
 spacy>=3.8.0,<3.9
+wordfreq>=3.1.1,<4

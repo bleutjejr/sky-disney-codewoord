@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 from datetime import date, datetime, timedelta
-from difflib import SequenceMatcher
+from difflib import SequenceMatcher, get_close_matches
 from pathlib import Path
 
 import config
@@ -76,34 +76,119 @@ def collapse(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_DUTCH_WORDS: list[str] | None = None
+
+
 def load_nlp():
     import spacy
 
+    dutch_words()
     log.info("spaCy laden: %s", config.SPACY_MODEL)
     return spacy.load(config.SPACY_MODEL)
+
+
+def dutch_words() -> list[str]:
+    global _DUTCH_WORDS
+    if _DUTCH_WORDS is None:
+        from wordfreq import top_n_list
+
+        seen: set[str] = set()
+        words: list[str] = []
+        for word in top_n_list("nl", config.WORDFREQ_TOP_N):
+            key = normalize_word(word)
+            if not key or not key.isalpha() or key in seen:
+                continue
+            seen.add(key)
+            words.append(key)
+        _DUTCH_WORDS = words
+        log.info("Nederlandse woordenlijst geladen: %s woorden.", len(words))
+    return _DUTCH_WORDS
 
 
 def _display_word(raw: str) -> str:
     return raw.strip().strip(".,!?;:\"“”‘’()[]{}").strip("-'")
 
 
+def _match_case(original: str, corrected: str) -> str:
+    if original.isupper():
+        return corrected.upper()
+    if original[:1].isupper():
+        return corrected[:1].upper() + corrected[1:]
+    return corrected
+
+
+def _zipf(word: str, lang: str) -> float:
+    from wordfreq import zipf_frequency
+
+    return zipf_frequency(word, lang)
+
+
+def _dutch_enough(key: str) -> bool:
+    """Nederlands is hoger, of hooguit ZIPF_EN_MARGIN lager, dan Engels."""
+    if key == "disney":
+        return True
+    return _zipf(key, "nl") + config.ZIPF_EN_MARGIN >= _zipf(key, "en")
+
+
+def _is_noun(nlp, word: str) -> bool:
+    doc = nlp(word)
+    tokens = [token for token in doc if not token.is_space and not token.is_punct]
+    return len(tokens) == 1 and tokens[0].pos_ in _NOUNS
+
+
+def _close_dutch_words(key: str) -> list[str]:
+    pool = [
+        word
+        for word in dutch_words()
+        if word != key and abs(len(word) - len(key)) <= config.CLOSE_LENGTH_DELTA
+    ]
+    return get_close_matches(key, pool, n=5, cutoff=config.CLOSE_CUTOFF)
+
+
 def judge_word(nlp, raw: str) -> tuple[bool, str, str]:
-    """Controleer één geëxtraheerd woord. Geeft (geldig, weergave, reden)."""
+    """Controleer één geëxtraheerd woord.
+
+    Geeft (geldig, weergave, logregel na de zin).
+    """
     word = _display_word(raw)
     key = normalize_word(word)
     if not key:
-        return False, word, "afgewezen: geen zelfstandig naamwoord"
+        return False, word, "geëxtraheerd: — | afgewezen: geen zelfstandig naamwoord"
     if key in config.BLACKLIST:
-        return False, word, "afgewezen: blacklist"
+        return False, word, f"geëxtraheerd: {word} | afgewezen: blacklist"
     if key == "disney":
-        return True, word, "geaccepteerd"
-    doc = nlp(word)
-    tokens = [token for token in doc if not token.is_space and not token.is_punct]
-    if len(tokens) != 1 or tokens[0].pos_ not in _NOUNS:
-        return False, word, "afgewezen: geen zelfstandig naamwoord"
-    if tokens[0].is_oov:
-        return False, word, "afgewezen: niet in het Nederlandse vocabulaire"
-    return True, word, "geaccepteerd"
+        return True, word, f"geëxtraheerd: {word} | geaccepteerd"
+    if _zipf(key, "nl") >= config.ZIPF_MIN:
+        if not _is_noun(nlp, word):
+            return False, word, f"geëxtraheerd: {word} | afgewezen: geen zelfstandig naamwoord"
+        if not _dutch_enough(key):
+            return False, word, f"geëxtraheerd: {word} | afgewezen: Engels woord"
+        return True, word, f"geëxtraheerd: {word} | geaccepteerd"
+
+    noun_failure = False
+    language_failure = False
+    for match in _close_dutch_words(key):
+        if match in config.BLACKLIST:
+            continue
+        if not _is_noun(nlp, match):
+            noun_failure = True
+            continue
+        if not _dutch_enough(match):
+            language_failure = True
+            continue
+        display = _match_case(word, match)
+        return (
+            True,
+            display,
+            f"geëxtraheerd: {word} -> gecorrigeerd naar: {display} | geaccepteerd",
+        )
+    if language_failure:
+        reason = "afgewezen: Engels woord"
+    elif noun_failure:
+        reason = "afgewezen: geen zelfstandig naamwoord"
+    else:
+        reason = "afgewezen: geen Nederlands woord"
+    return False, word, f"geëxtraheerd: {word} | {reason}"
 
 
 def _sentence_spans(text: str) -> list[tuple[int, int, str]]:
@@ -155,12 +240,10 @@ def review_transcript(nlp, text: str) -> list[tuple[str, str]]:
             if key in seen_words:
                 continue
             seen_words.add(key)
-            ok, word, reason = judge_word(nlp, raw)
+            ok, word, detail = judge_word(nlp, raw)
+            log.info("Zin: %s | %s", sentence, detail)
             if ok:
-                log.info("Zin: %s | geëxtraheerd: %s | geaccepteerd", sentence, word)
                 accepted.append((word, sentence))
-            else:
-                log.info("Zin: %s | geëxtraheerd: %s | %s", sentence, word or raw, reason)
     return accepted
 
 

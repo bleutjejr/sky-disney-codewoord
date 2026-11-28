@@ -81,10 +81,18 @@ EPOCH_RESETS: dict[int, tuple[date, ...]] = {
     4: (date(2026, 11, 28),),
 }
 
-# nl_core_news_sm heeft geen woordvectoren, dus token.is_oov is daar altijd
-# True en zou ook Fantasie afwijzen. md is het kleinste Nederlandse model
-# waarbij is_oov betekent: dit woord staat niet in het vocabulaire.
+# Alleen de woordsoort. Of het een Nederlands woord is, beslist wordfreq.
 SPACY_MODEL = "nl_core_news_md"
+# zipf >= 2.5 is een gewoon Nederlands woord. Daaronder mag een kleine
+# transcriptiefout nog naar een woord van vergelijkbare lengte (hooguit
+# één letter verschil). Een ruimer venster trekt Fotosie naar fotoserie;
+# Fantasie zelf scoort maar 0.67 en haalt de cutoff van 0.78 niet.
+ZIPF_MIN = 2.5
+# Nederlands mag hooguit een half punt lager liggen dan Engels.
+ZIPF_EN_MARGIN = 0.5
+CLOSE_CUTOFF = 0.78
+WORDFREQ_TOP_N = 25000
+CLOSE_LENGTH_DELTA = 1
 
 # Whisper-hallucinaties, Engelse songtekst en zender-/opvulwoorden.
 # "disney" staat hier bewust niet bij: dat kan zelf het codewoord zijn.

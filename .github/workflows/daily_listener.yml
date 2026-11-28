@@ -49,13 +49,12 @@ jobs:
       - name: ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
-      # Zelfde pip-cache als requirements.txt (setup-python cache: pip).
-      # md in plaats van sm: sm heeft geen vectoren, dus token.is_oov is daar altijd True.
+      # spaCy en wordfreq komen via pip in dezelfde cache als requirements.txt.
       - name: Dependencies
         run: |
           pip install -r requirements.txt
           python -m spacy download nl_core_news_md
-          python -c "import spacy; spacy.load('nl_core_news_md'); print('nl_core_news_md gereed')"
+          python -c "import spacy; from wordfreq import zipf_frequency; spacy.load('nl_core_news_md'); print('wordfreq gereed', zipf_frequency('fantasie', 'nl'))"
 
       - name: Cache Whisper-model
         uses: actions/cache@v4
